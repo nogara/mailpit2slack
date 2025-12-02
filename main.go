@@ -342,6 +342,7 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 		log.WithError(err).Error("search error")
 		return
 	}
+	log.Debugf("found %d messages matching query", len(messages))
 
 	changed := false
 	for i, summary := range messages {
