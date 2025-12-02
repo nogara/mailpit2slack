@@ -13,6 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"database/sql"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type mailpitAddress struct {
@@ -112,7 +116,7 @@ type config struct {
 	SlackWebhookURL   string
 	SearchQuery       string
 	PollInterval      time.Duration
-	ProcessedFile     string
+	ProcessedDB       string
 	otpRegex          *regexp.Regexp
 	maxMessagesPerRun int
 }
@@ -152,7 +156,7 @@ func loadConfig() (config, error) {
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SearchQuery:       searchQuery,
 		PollInterval:      time.Duration(interval) * time.Second,
-		ProcessedFile:     getEnvOrDefault("PROCESSED_STORE_FILE", filepath.Join("db", "processed_ids.txt")),
+		ProcessedDB:       getEnvOrDefault("PROCESSED_DB_PATH", filepath.Join("db", "processed.sqlite")),
 		otpRegex:          regex,
 		maxMessagesPerRun: maxMessages,
 	}, nil
@@ -283,41 +287,47 @@ func getEnvOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func loadProcessed(file string) (map[string]struct{}, error) {
-	result := make(map[string]struct{})
-	data, err := os.ReadFile(file)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return result, nil
-		}
-		return result, err
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		id := strings.TrimSpace(line)
-		if id == "" {
-			continue
-		}
-		result[id] = struct{}{}
-	}
-	return result, nil
+type processedStore struct {
+	db *sql.DB
 }
 
-func saveProcessed(file string, processed map[string]struct{}) error {
-	if dir := filepath.Dir(file); dir != "." {
+func newProcessedStore(path string) (*processedStore, error) {
+	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	var lines []string
-	for id := range processed {
-		lines = append(lines, id)
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		return nil, err
 	}
-	content := strings.Join(lines, "\n")
-	return os.WriteFile(file, []byte(content), 0o644)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS processed (
+		id TEXT PRIMARY KEY,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`); err != nil {
+		return nil, err
+	}
+	return &processedStore{db: db}, nil
 }
 
-func poll(cfg config, client *mailpitClient, processed map[string]struct{}) {
+func (s *processedStore) Seen(id string) (bool, error) {
+	var tmp string
+	err := s.db.QueryRow("SELECT id FROM processed WHERE id = ? LIMIT 1", id).Scan(&tmp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *processedStore) Mark(id string) error {
+	_, err := s.db.Exec("INSERT OR IGNORE INTO processed(id) VALUES(?)", id)
+	return err
+}
+
+func poll(cfg config, client *mailpitClient, store *processedStore) {
 	fmt.Println("Checking...")
 	messages, err := client.searchMessages(cfg.SearchQuery)
 	if err != nil {
@@ -333,7 +343,12 @@ func poll(cfg config, client *mailpitClient, processed map[string]struct{}) {
 		if i >= cfg.maxMessagesPerRun {
 			break
 		}
-		if _, seen := processed[summary.ID]; seen {
+		seen, err := store.Seen(summary.ID)
+		if err != nil {
+			fmt.Println("processed check error:", err)
+			continue
+		}
+		if seen {
 			continue
 		}
 
@@ -355,16 +370,14 @@ func poll(cfg config, client *mailpitClient, processed map[string]struct{}) {
 			fmt.Println("slack error:", err)
 			continue
 		}
-		processed[summary.ID] = struct{}{}
+		if err := store.Mark(summary.ID); err != nil {
+			fmt.Println("failed to mark processed:", err)
+			continue
+		}
 		changed = true
 		fmt.Printf("Sent OTP %s for %s to Slack\n", otp, recipient)
 	}
-
-	if changed {
-		if err := saveProcessed(cfg.ProcessedFile, processed); err != nil {
-			fmt.Println("failed to save processed IDs:", err)
-		}
-	}
+	_ = changed
 }
 
 func main() {
@@ -379,19 +392,19 @@ func main() {
 	}
 
 	client := newMailpitClient(cfg.MailpitURL, cfg.MailpitUsername, cfg.MailpitPassword)
-	processed, err := loadProcessed(cfg.ProcessedFile)
+	store, err := newProcessedStore(cfg.ProcessedDB)
 	if err != nil {
-		fmt.Println("warning: could not load processed IDs, starting fresh:", err)
-		processed = make(map[string]struct{})
+		fmt.Println("db error:", err)
+		os.Exit(1)
 	}
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 
 	fmt.Println("Starting mailpit -> slack forwarder")
-	poll(cfg, client, processed)
+	poll(cfg, client, store)
 
 	for range ticker.C {
-		poll(cfg, client, processed)
+		poll(cfg, client, store)
 	}
 }

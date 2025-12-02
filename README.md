@@ -13,7 +13,7 @@ Copy `.env.example` to `.env` (or set the variables directly):
 - `POLL_INTERVAL_SECONDS`: How often to poll Mailpit (default 10).
 - `OTP_REGEX`: Regex used to extract the OTP (default `\b\d{6,8}\b`).
 - `MAX_MESSAGES_PER_POLL`: Safety cap on how many messages are inspected per poll (default 20).
-- `PROCESSED_STORE_FILE`: Path to a local file storing processed Mailpit message IDs to avoid duplicate Slack posts (default `db/processed_ids.txt`).
+- `PROCESSED_DB_PATH`: Path to a sqlite DB storing processed Mailpit message IDs to avoid duplicate Slack posts (default `db/processed.sqlite`).
 
 ## Running locally
 
@@ -21,8 +21,7 @@ Copy `.env.example` to `.env` (or set the variables directly):
 go run main.go
 ```
 
-The process keeps a small in-memory set of already processed Mailpit message IDs to avoid duplicate Slack posts.
-It also persists that set to `PROCESSED_STORE_FILE`, so restarts won't re-send already seen messages. The default path lives under `./db`, which is mounted as a named volume in Docker Compose for persistence.
+The process persists processed Mailpit message IDs in sqlite at `PROCESSED_DB_PATH`, so restarts won't re-send already seen messages. The default path lives under `./db`, which is mounted as a named volume in Docker Compose for persistence.
 
 ## Docker
 
