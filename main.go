@@ -404,7 +404,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+	log.SetFormatter(&log.JSONFormatter{TimestampFormat: time.RFC3339})
 	log.SetLevel(cfg.LogLevel)
 
 	client := newMailpitClient(cfg.MailpitURL, cfg.MailpitUsername, cfg.MailpitPassword)
