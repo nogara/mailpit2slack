@@ -84,7 +84,6 @@ func (c *mailpitClient) request(method, path string) (*http.Response, error) {
 func (c *mailpitClient) searchMessages(query string) ([]mailpitMessageSummary, error) {
 	fullUrl := "/api/v1/search?query=" + url.QueryEscape(query)
 	resp, err := c.request("GET", fullUrl)
-	fmt.Println("Query:", fullUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -328,15 +327,11 @@ func (s *processedStore) Mark(id string) error {
 }
 
 func poll(cfg config, client *mailpitClient, store *processedStore) {
-	fmt.Println("Checking...")
 	messages, err := client.searchMessages(cfg.SearchQuery)
 	if err != nil {
 		fmt.Println("search error:", err)
 		return
 	}
-
-	// print number of messages found
-	fmt.Printf("Found %d messages\n", len(messages))
 
 	changed := false
 	for i, summary := range messages {
