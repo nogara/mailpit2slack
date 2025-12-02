@@ -1,0 +1,12 @@
+# Local env/config
+.env
+db/
+
+# Binaries
+mailpit2slack
+mailpit2slack.exe
+
+# Modules/build
+/bin
+/vendor
+*.log

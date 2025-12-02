@@ -1,0 +1,11 @@
+services:
+  mailpit2slack:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - db-data:/app/db
+    restart: unless-stopped
+
+volumes:
+  db-data:
