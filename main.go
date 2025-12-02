@@ -17,6 +17,7 @@ import (
 	"database/sql"
 
 	_ "github.com/mattn/go-sqlite3"
+	log "github.com/sirupsen/logrus"
 )
 
 type mailpitAddress struct {
@@ -116,6 +117,7 @@ type config struct {
 	SearchQuery       string
 	PollInterval      time.Duration
 	ProcessedDB       string
+	LogLevel          log.Level
 	otpRegex          *regexp.Regexp
 	maxMessagesPerRun int
 }
@@ -141,6 +143,12 @@ func loadConfig() (config, error) {
 		return config{}, errors.New("MAILPIT_SEARCH_QUERY or TEST_EMAIL_DOMAIN must be set to filter results")
 	}
 
+	logLevelStr := strings.ToLower(getEnvOrDefault("LOG_LEVEL", "info"))
+	parsedLevel, err := log.ParseLevel(logLevelStr)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid LOG_LEVEL: %w", err)
+	}
+
 	maxMessages := 20
 	if val := os.Getenv("MAX_MESSAGES_PER_POLL"); val != "" {
 		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
@@ -156,6 +164,7 @@ func loadConfig() (config, error) {
 		SearchQuery:       searchQuery,
 		PollInterval:      time.Duration(interval) * time.Second,
 		ProcessedDB:       getEnvOrDefault("PROCESSED_DB_PATH", filepath.Join("db", "processed.sqlite")),
+		LogLevel:          parsedLevel,
 		otpRegex:          regex,
 		maxMessagesPerRun: maxMessages,
 	}, nil
@@ -327,9 +336,10 @@ func (s *processedStore) Mark(id string) error {
 }
 
 func poll(cfg config, client *mailpitClient, store *processedStore) {
+	log.Info("checking mailpit for messages")
 	messages, err := client.searchMessages(cfg.SearchQuery)
 	if err != nil {
-		fmt.Println("search error:", err)
+		log.WithError(err).Error("search error")
 		return
 	}
 
@@ -340,7 +350,7 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 		}
 		seen, err := store.Seen(summary.ID)
 		if err != nil {
-			fmt.Println("processed check error:", err)
+			log.WithError(err).Error("processed check error")
 			continue
 		}
 		if seen {
@@ -349,28 +359,35 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 
 		msg, err := client.getMessage(summary.ID)
 		if err != nil {
-			fmt.Println("get message error:", err)
+			log.WithError(err).Error("get message error")
 			continue
 		}
 
 		otp := extractOTP(msg, cfg.otpRegex)
 		if otp == "" {
-			fmt.Printf("no OTP found in message %s (subject: %q)\n", summary.ID, msg.Subject)
+			log.WithFields(log.Fields{
+				"message_id": summary.ID,
+				"subject":    msg.Subject,
+			}).Warn("no OTP found in message")
 			continue
 		}
 
 		recipient := recipientFromSummary(summary)
 		payload := formatSlackMessage(recipient, otp)
 		if err := sendToSlack(cfg.SlackWebhookURL, payload); err != nil {
-			fmt.Println("slack error:", err)
+			log.WithError(err).Error("slack error")
 			continue
 		}
 		if err := store.Mark(summary.ID); err != nil {
-			fmt.Println("failed to mark processed:", err)
+			log.WithError(err).Error("failed to mark processed")
 			continue
 		}
 		changed = true
-		fmt.Printf("Sent OTP %s for %s to Slack\n", otp, recipient)
+		log.WithFields(log.Fields{
+			"otp":    otp,
+			"email":  recipient,
+			"msg_id": summary.ID,
+		}).Info("sent OTP to Slack")
 	}
 	_ = changed
 }
@@ -378,25 +395,28 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 func main() {
 	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Println("config error:", err)
+		log.WithError(err).Error("config error")
 		os.Exit(1)
 	}
 	if err := validateConfig(cfg); err != nil {
-		fmt.Println("config error:", err)
+		log.WithError(err).Error("config error")
 		os.Exit(1)
 	}
+
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+	log.SetLevel(cfg.LogLevel)
 
 	client := newMailpitClient(cfg.MailpitURL, cfg.MailpitUsername, cfg.MailpitPassword)
 	store, err := newProcessedStore(cfg.ProcessedDB)
 	if err != nil {
-		fmt.Println("db error:", err)
+		log.WithError(err).Error("db error")
 		os.Exit(1)
 	}
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 
-	fmt.Println("Starting mailpit -> slack forwarder")
+	log.Info("starting mailpit -> slack forwarder")
 	poll(cfg, client, store)
 
 	for range ticker.C {

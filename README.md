@@ -14,6 +14,7 @@ Copy `.env.example` to `.env` (or set the variables directly):
 - `OTP_REGEX`: Regex used to extract the OTP (default `\b\d{6,8}\b`).
 - `MAX_MESSAGES_PER_POLL`: Safety cap on how many messages are inspected per poll (default 20).
 - `PROCESSED_DB_PATH`: Path to a sqlite DB storing processed Mailpit message IDs to avoid duplicate Slack posts (default `db/processed.sqlite`).
+- `LOG_LEVEL`: Log level for the service (`panic`, `fatal`, `error`, `warn`, `info`, `debug`, `trace`; default `info`).
 
 ## Running locally
 
