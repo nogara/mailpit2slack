@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -115,6 +116,7 @@ type config struct {
 	MailpitPassword   string
 	SlackWebhookURL   string
 	SearchQuery       string
+	IgnoredRecipients ignoreRules
 	PollInterval      time.Duration
 	ProcessedDB       string
 	LogLevel          log.Level
@@ -162,6 +164,7 @@ func loadConfig() (config, error) {
 		MailpitPassword:   os.Getenv("MAILPIT_PASSWORD"),
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SearchQuery:       searchQuery,
+		IgnoredRecipients: parseIgnoredRecipients(os.Getenv("IGNORED_EMAIL_ADDRESSES")),
 		PollInterval:      time.Duration(interval) * time.Second,
 		ProcessedDB:       getEnvOrDefault("PROCESSED_DB_PATH", filepath.Join("db", "processed.sqlite")),
 		LogLevel:          parsedLevel,
@@ -288,6 +291,52 @@ func recipientFromSummary(summary mailpitMessageSummary) string {
 	return addr.Mailbox + "@" + addr.Domain
 }
 
+type ignoreRules struct {
+	exact    map[string]struct{}
+	patterns []string
+}
+
+func parseIgnoredRecipients(raw string) ignoreRules {
+	ignored := ignoreRules{
+		exact: make(map[string]struct{}),
+	}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	}) {
+		normalized := normalizeEmailAddress(part)
+		if normalized == "" {
+			continue
+		}
+		if strings.ContainsAny(normalized, "*?[") {
+			ignored.patterns = append(ignored.patterns, normalized)
+			continue
+		}
+		ignored.exact[normalized] = struct{}{}
+	}
+	return ignored
+}
+
+func normalizeEmailAddress(address string) string {
+	return strings.ToLower(strings.TrimSpace(address))
+}
+
+func shouldIgnoreRecipient(cfg config, recipient string) bool {
+	normalized := normalizeEmailAddress(recipient)
+	if normalized == "" {
+		return false
+	}
+	if _, ignored := cfg.IgnoredRecipients.exact[normalized]; ignored {
+		return true
+	}
+	for _, pattern := range cfg.IgnoredRecipients.patterns {
+		matched, err := path.Match(pattern, normalized)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
 func getEnvOrDefault(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -374,6 +423,17 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 		}
 
 		recipient := recipientFromSummary(summary)
+		if shouldIgnoreRecipient(cfg, recipient) {
+			if err := store.Mark(summary.ID); err != nil {
+				log.WithError(err).Error("failed to mark ignored message processed")
+				continue
+			}
+			log.WithFields(log.Fields{
+				"email":  recipient,
+				"msg_id": summary.ID,
+			}).Info("ignored recipient")
+			continue
+		}
 		payload := formatSlackMessage(recipient, otp)
 		if err := sendToSlack(cfg.SlackWebhookURL, payload); err != nil {
 			log.WithError(err).Error("slack error")

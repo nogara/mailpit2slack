@@ -10,6 +10,7 @@ Copy `.env.example` to `.env` (or set the variables directly):
 - `MAILPIT_USERNAME` / `MAILPIT_PASSWORD`: Optional basic auth credentials.
 - `MAILPIT_SEARCH_QUERY`: String passed to Mailpit `/api/v1/search` to scope messages (e.g., recipient email or domain). Falls back to `TEST_EMAIL_DOMAIN`.
 - `SLACK_WEBHOOK_URL` (required): Slack incoming webhook URL.
+- `IGNORED_EMAIL_ADDRESSES`: Optional comma-, semicolon-, or newline-separated recipient email addresses or glob patterns to skip. Matches are case-insensitive, so values like `partner@example.com` or `e2e-*` both work.
 - `POLL_INTERVAL_SECONDS`: How often to poll Mailpit (default 10).
 - `OTP_REGEX`: Regex used to extract the OTP (default `\b\d{6,8}\b`).
 - `MAX_MESSAGES_PER_POLL`: Safety cap on how many messages are inspected per poll (default 20).
@@ -23,6 +24,8 @@ go run main.go
 ```
 
 The process persists processed Mailpit message IDs in sqlite at `PROCESSED_DB_PATH`, so restarts won't re-send already seen messages. The default path lives under `./db`, which is mounted as a named volume in Docker Compose for persistence.
+
+Ignored recipients are marked as processed, so they are skipped once and won't be re-evaluated on every poll.
 
 ## Docker
 
