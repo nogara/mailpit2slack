@@ -78,7 +78,7 @@ docker run --rm \
   -e MAILPIT_USERNAME=your-username \
   -e MAILPIT_PASSWORD=your-password \
   -e MAILPIT_SEARCH_QUERY=mail.yourdomain.com \
-  -e SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ \
+  -e SLACK_WEBHOOK_URL=https://slack.example.invalid/webhook \
   -e HEARTBEAT_ENABLED=true \
   -e HEARTBEAT_SMTP_HOST=smtp.yourdomain.com \
   -e HEARTBEAT_SMTP_PORT=587 \
