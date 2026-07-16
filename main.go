@@ -164,6 +164,7 @@ type config struct {
 	MailpitPassword   string
 	SlackWebhookURL   string
 	SearchQuery       string
+	AllowedDomains    allowedDomains
 	IgnoredRecipients ignoreRules
 	PollInterval      time.Duration
 	ProcessedDB       string
@@ -188,10 +189,7 @@ func loadConfig() (config, error) {
 
 	searchQuery := os.Getenv("MAILPIT_SEARCH_QUERY")
 	if searchQuery == "" {
-		searchQuery = os.Getenv("TEST_EMAIL_DOMAIN")
-	}
-	if searchQuery == "" {
-		return config{}, errors.New("MAILPIT_SEARCH_QUERY or TEST_EMAIL_DOMAIN must be set to filter results")
+		return config{}, errors.New("MAILPIT_SEARCH_QUERY must be set to filter results")
 	}
 
 	logLevelStr := strings.ToLower(getEnvOrDefault("LOG_LEVEL", "info"))
@@ -220,6 +218,7 @@ func loadConfig() (config, error) {
 		MailpitPassword:   os.Getenv("MAILPIT_PASSWORD"),
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SearchQuery:       searchQuery,
+		AllowedDomains:    parseAllowedDomains(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		IgnoredRecipients: parseIgnoredRecipients(os.Getenv("IGNORED_EMAIL_ADDRESSES")),
 		PollInterval:      time.Duration(pollSeconds) * time.Second,
 		ProcessedDB:       getEnvOrDefault("PROCESSED_DB_PATH", filepath.Join("db", "processed.sqlite")),
@@ -403,6 +402,36 @@ func recipientFromSummary(summary mailpitMessageSummary) string {
 		return addr.Domain
 	}
 	return addr.Mailbox + "@" + addr.Domain
+}
+
+// allowedDomains is empty when every recipient domain is accepted.
+type allowedDomains map[string]struct{}
+
+func parseAllowedDomains(raw string) allowedDomains {
+	domains := make(allowedDomains)
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	}) {
+		domain := strings.TrimPrefix(normalizeEmailAddress(part), "@")
+		if domain == "" {
+			continue
+		}
+		domains[domain] = struct{}{}
+	}
+	return domains
+}
+
+func recipientDomainAllowed(cfg config, recipient string) bool {
+	if len(cfg.AllowedDomains) == 0 {
+		return true
+	}
+	normalized := normalizeEmailAddress(recipient)
+	at := strings.LastIndex(normalized, "@")
+	if at < 0 {
+		return false
+	}
+	_, allowed := cfg.AllowedDomains[normalized[at+1:]]
+	return allowed
 }
 
 type ignoreRules struct {
@@ -958,7 +987,7 @@ func messageHasRecipient(msg *mailpitMessage, recipient string) bool {
 	return false
 }
 
-func poll(cfg config, client *mailpitClient, store *processedStore) {
+func poll(cfg config, client mailpitAPI, store *processedStore) {
 	log.Info("checking mailpit for messages")
 	messages, err := client.searchMessages(cfg.SearchQuery)
 	if err != nil {
@@ -980,6 +1009,15 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 			continue
 		}
 
+		recipient := recipientFromSummary(summary)
+		if !recipientDomainAllowed(cfg, recipient) {
+			log.WithFields(log.Fields{
+				"email":  recipient,
+				"msg_id": summary.ID,
+			}).Debug("recipient domain not allowed")
+			continue
+		}
+
 		msg, err := client.getMessage(summary.ID)
 		if err != nil {
 			log.WithError(err).Error("get message error")
@@ -998,7 +1036,6 @@ func poll(cfg config, client *mailpitClient, store *processedStore) {
 			continue
 		}
 
-		recipient := recipientFromSummary(summary)
 		if shouldIgnoreRecipient(cfg, recipient) {
 			if err := store.Mark(summary.ID); err != nil {
 				log.WithError(err).Error("failed to mark ignored message processed")
