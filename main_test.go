@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -58,6 +59,103 @@ func TestShouldIgnoreRecipientPattern(t *testing.T) {
 
 	if shouldIgnoreRecipient(cfg, "prod-user@example.com") {
 		t.Fatal("did not expect unrelated recipient to match ignore rules")
+	}
+}
+
+func TestParseAllowedDomains(t *testing.T) {
+	domains := parseAllowedDomains(" @mail.s.example.com ,\n S.EXAMPLE.NET ; ")
+
+	if len(domains) != 2 {
+		t.Fatalf("expected 2 domains, got %d", len(domains))
+	}
+	for _, domain := range []string{"mail.s.example.com", "s.example.net"} {
+		if _, ok := domains[domain]; !ok {
+			t.Fatalf("expected %q to be allowed", domain)
+		}
+	}
+}
+
+func TestRecipientDomainAllowed(t *testing.T) {
+	cfg := config{
+		AllowedDomains: parseAllowedDomains("mail.s.example.com,s.example.net"),
+	}
+
+	for _, recipient := range []string{
+		"user@mail.s.example.com",
+		" User@S.Example.NET ",
+	} {
+		if !recipientDomainAllowed(cfg, recipient) {
+			t.Fatalf("expected %q to be allowed", recipient)
+		}
+	}
+
+	for _, recipient := range []string{
+		"user@other.example.org",
+		"user@example.com",
+		"user@sub.s.example.net",
+		"unknown recipient",
+	} {
+		if recipientDomainAllowed(cfg, recipient) {
+			t.Fatalf("did not expect %q to be allowed", recipient)
+		}
+	}
+}
+
+func TestRecipientDomainAllowedWithoutAllowlist(t *testing.T) {
+	if !recipientDomainAllowed(config{}, "anyone@anywhere.test") {
+		t.Fatal("expected every domain to be allowed when allowlist is empty")
+	}
+}
+
+func TestPollOnlySendsAllowedDomains(t *testing.T) {
+	store := newTestStore(t)
+	mailpit := newFakeMailpitClient()
+
+	var sent []otpMessage
+	slack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload otpMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode slack payload: %v", err)
+		}
+		sent = append(sent, payload)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slack.Close()
+
+	for id, domain := range map[string]string{
+		"msg-1": "mail.s.example.com",
+		"msg-2": "s.example.net",
+		"msg-3": "other.example.org",
+	} {
+		mailpit.addMessage(mailpitMessage{
+			ID:      id,
+			Subject: "login code",
+			Text:    "your code is 123456",
+			To:      []mailpitAddress{{Address: "user@" + domain}},
+		})
+	}
+
+	poll(config{
+		SlackWebhookURL:   slack.URL,
+		SearchQuery:       "login code",
+		AllowedDomains:    parseAllowedDomains("mail.s.example.com,s.example.net"),
+		otpRegex:          regexp.MustCompile(`\b\d{6,8}\b`),
+		maxMessagesPerRun: 20,
+	}, mailpit, store)
+
+	if len(sent) != 2 {
+		t.Fatalf("expected 2 OTPs sent to slack, got %d: %+v", len(sent), sent)
+	}
+	for _, payload := range sent {
+		if strings.HasSuffix(payload.Email, "@other.example.org") {
+			t.Fatalf("expected disallowed domain to be filtered out, got %q", payload.Email)
+		}
+		if payload.OTP != "123456" {
+			t.Fatalf("expected OTP 123456, got %q", payload.OTP)
+		}
+	}
+	if seen, _ := store.Seen("msg-3"); seen {
+		t.Fatal("did not expect disallowed message to be marked processed")
 	}
 }
 

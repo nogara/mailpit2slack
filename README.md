@@ -10,7 +10,8 @@ Copy `.env.example` to `.env` (or set the variables directly):
 
 - `MAILPIT_URL` (required): Base URL of the Mailpit server.
 - `MAILPIT_USERNAME` / `MAILPIT_PASSWORD`: Optional basic auth credentials.
-- `MAILPIT_SEARCH_QUERY`: String passed to Mailpit `/api/v1/search` to scope messages (e.g., recipient email or domain). Falls back to `TEST_EMAIL_DOMAIN`.
+- `MAILPIT_SEARCH_QUERY` (required): String passed to Mailpit `/api/v1/search` to scope messages (e.g., subject terms). To scope by recipient domain, use `ALLOWED_EMAIL_DOMAINS` below.
+- `ALLOWED_EMAIL_DOMAINS`: Optional comma-, semicolon-, or newline-separated allowlist of recipient (`To`) domains, e.g. `mail.yourdomain.com,another.yourdomain.com`. A leading `@` is accepted and matching is case-insensitive. When empty, every domain is accepted. Use this instead of putting domains in `MAILPIT_SEARCH_QUERY`: Mailpit ANDs search terms, so a single query cannot match either of two domains. Matching is exact, so subdomains must be listed individually.
 - `SLACK_WEBHOOK_URL` (required): Slack incoming webhook URL.
 - `IGNORED_EMAIL_ADDRESSES`: Optional comma-, semicolon-, or newline-separated recipient email addresses or glob patterns to skip. Matches are case-insensitive, so values like `partner@example.com` or `e2e-*` both work.
 - `POLL_INTERVAL_SECONDS`: How often to poll Mailpit (default 10).
